@@ -1,5 +1,12 @@
+/**
+ * @title RepoTransaction
+ * @dev RepoTransaction contract with deposit/settle functions
+ * @custom:dev-run-script scripts/deposit.js
+ */
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
+
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
@@ -106,24 +113,6 @@ contract RepoTransaction is ReentrancyGuard {
 
         repo.settled = true;
         emit Settled(buyer, total);
-    }
-
-    function getRepoInfo() external view returns (
-        string memory sellerDID,
-        string memory buyerDID,
-        uint256 principal,
-        uint256 interest,
-        uint256 maturityAmount,
-        bool deposited,
-        bool settled
-    ) {
-        sellerDID = repo.sellerDID;
-        buyerDID = repo.buyerDID;
-        principal = repo.principal;
-        interest = calculateInterest();
-        maturityAmount = principal + interest;
-        deposited = repo.deposited;
-        settled = repo.settled;
     }
 
     // Emergency function to recover ERC20 tokens sent to the contract by mistake
