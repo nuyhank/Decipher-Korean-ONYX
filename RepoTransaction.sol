@@ -1,16 +1,8 @@
-/**
- * @title RepoTransaction
- * @dev RepoTransaction contract with deposit/settle functions
- * @custom:dev-run-script scripts/deposit.js
- */
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-
 
 contract RepoTransaction is ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -19,18 +11,19 @@ contract RepoTransaction is ReentrancyGuard {
         string sellerDID;
         string buyerDID;
         uint256 principal;
-        uint256 interestRate; // BPS
+        uint256 interestRate; // in basis points (bps)
         uint256 startDate;
         uint256 maturityDate;
+        uint256 preCalculatedInterest;
         bool settled;
         bool deposited;
     }
 
     event Deposited(address indexed by, uint256 amount);
-    event Settled(address indexed by, uint256 amount);
+    event Settled(address indexed by, uint256 totalPaid);
     event InterestCalculated(uint256 interestAmount);
 
-    IERC20 public token;
+    IERC20 public token; // WRP
     Repo public repo;
     address public seller;
     address public buyer;
@@ -45,13 +38,16 @@ contract RepoTransaction is ReentrancyGuard {
         uint256 _maturityDate,
         address _buyer
     ) {
-        require(_maturityDate > _startDate, "Maturity date must be after start date");
-        require(_principal > 0, "Principal must be greater than zero");
-        require(_interestRateBPS <= 10000, "Interest rate cannot exceed 100%");
+        require(_maturityDate > _startDate, "Invalid dates");
+        require(_principal > 0, "Principal must be > 0");
+        require(_interestRateBPS <= 10000, "Max 100% interest");
 
         token = IERC20(tokenAddress);
         seller = msg.sender;
         buyer = _buyer;
+
+        uint256 duration = (_maturityDate - _startDate) / 1 days;
+        uint256 interest = (_principal * _interestRateBPS * duration) / (365 * 10000);
 
         repo = Repo({
             sellerDID: _sellerDID,
@@ -60,64 +56,50 @@ contract RepoTransaction is ReentrancyGuard {
             interestRate: _interestRateBPS,
             startDate: _startDate,
             maturityDate: _maturityDate,
+            preCalculatedInterest: interest,
             settled: false,
             deposited: false
         });
+
+        emit InterestCalculated(interest);
     }
 
     function deposit() external nonReentrant {
-        require(msg.sender == seller, "RepoTransaction: Only seller can deposit");
-        require(!repo.deposited, "RepoTransaction: Already deposited");
+    require(msg.sender == seller, "Only seller can deposit");
+    require(!repo.deposited, "Already deposited");
 
-        token.safeTransferFrom(seller, address(this), repo.principal);
-        repo.deposited = true;
+    token.safeTransferFrom(seller, address(this), repo.principal);
 
-        emit Deposited(seller, repo.principal);
-    }
+    token.safeTransfer(buyer, repo.principal);
+
+    repo.deposited = true;
+
+    emit Deposited(msg.sender, repo.principal);
+}
+
 
     function settle() external nonReentrant {
-        require(msg.sender == buyer, "RepoTransaction: Only buyer can settle");
-        require(block.timestamp >= repo.maturityDate, "RepoTransaction: Not matured yet");
-        require(!repo.settled, "RepoTransaction: Already settled");
-        require(repo.deposited, "RepoTransaction: Principal not deposited");
+        require(msg.sender == buyer, "Only buyer can settle");
+        require(block.timestamp >= repo.maturityDate, "Not yet matured");
+        require(!repo.settled, "Already settled");
+        require(repo.deposited, "Principal not deposited");
 
-        uint256 interest = calculateInterest();
-        uint256 total = repo.principal + interest;
+        uint256 totalOwed = repo.principal + repo.preCalculatedInterest;
 
-        token.safeTransferFrom(buyer, seller, total);
-        token.safeTransfer(seller, repo.principal);
-
-        repo.settled = true;
-
-        emit Settled(buyer, total);
-    }
-
-    function calculateInterest() public view returns (uint256) {
-        uint256 duration = repo.maturityDate - repo.startDate;
-        uint256 annualInterest = (repo.principal * repo.interestRate) / 10000;
-        uint256 interest = (annualInterest * duration) / (365 days);
-        return interest;
-    }
-
-    // This function should be protected or removed in production
-    function forceSettle() external nonReentrant {
-        require(msg.sender == buyer, "RepoTransaction: Only buyer can settle");
-        require(!repo.settled, "RepoTransaction: Already settled");
-        require(repo.deposited, "RepoTransaction: Principal not deposited");
-
-        uint256 interest = calculateInterest();
-        uint256 total = repo.principal + interest;
-
-        token.safeTransferFrom(buyer, seller, total);
-        token.safeTransfer(seller, repo.principal);
+        token.safeTransferFrom(buyer, seller, totalOwed);
+        token.safeTransfer(buyer, repo.principal); // Buyer receives the principal
 
         repo.settled = true;
-        emit Settled(buyer, total);
+
+        emit Settled(msg.sender, totalOwed);
     }
 
-    // Emergency function to recover ERC20 tokens sent to the contract by mistake
+    function calculateInterest() external view returns (uint256) {
+        return repo.preCalculatedInterest;
+    }
+
     function recoverERC20(address tokenAddress, uint256 tokenAmount) external {
-        require(msg.sender == seller, "RepoTransaction: Only seller can recover tokens");
+        require(msg.sender == seller, "Only seller can recover tokens");
         IERC20(tokenAddress).safeTransfer(seller, tokenAmount);
     }
 }
