@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-interface IERC20 {
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-    function transfer(address to, uint256 amount) external returns (bool);
-}
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract RepoTransaction {
+
+contract RepoTransaction is ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     struct Repo {
         string sellerDID;
         string buyerDID;
@@ -17,6 +18,10 @@ contract RepoTransaction {
         bool settled;
         bool deposited;
     }
+
+    event Deposited(address indexed by, uint256 amount);
+    event Settled(address indexed by, uint256 amount);
+    event InterestCalculated(uint256 interestAmount);
 
     IERC20 public token;
     Repo public repo;
@@ -33,6 +38,10 @@ contract RepoTransaction {
         uint256 _maturityDate,
         address _buyer
     ) {
+        require(_maturityDate > _startDate, "Maturity date must be after start date");
+        require(_principal > 0, "Principal must be greater than zero");
+        require(_interestRateBPS <= 10000, "Interest rate cannot exceed 100%");
+
         token = IERC20(tokenAddress);
         seller = msg.sender;
         buyer = _buyer;
@@ -49,60 +58,54 @@ contract RepoTransaction {
         });
     }
 
-    // 매도자가 approve 후 호출해서 토큰 입금
-    function deposit() external {
-        require(msg.sender == seller, "Only seller can deposit");
-        require(!repo.deposited, "Already deposited");
+    function deposit() external nonReentrant {
+        require(msg.sender == seller, "RepoTransaction: Only seller can deposit");
+        require(!repo.deposited, "RepoTransaction: Already deposited");
 
-        bool success = token.transferFrom(seller, address(this), repo.principal);
-        require(success, "Token transfer failed");
-
+        token.safeTransferFrom(seller, address(this), repo.principal);
         repo.deposited = true;
+
+        emit Deposited(seller, repo.principal);
     }
 
-    function settle() external {
-        require(msg.sender == buyer, "Only buyer can settle");
-        require(block.timestamp >= repo.maturityDate, "Not matured yet");
-        require(!repo.settled, "Already settled");
-        require(repo.deposited, "Principal not deposited");
+    function settle() external nonReentrant {
+        require(msg.sender == buyer, "RepoTransaction: Only buyer can settle");
+        require(block.timestamp >= repo.maturityDate, "RepoTransaction: Not matured yet");
+        require(!repo.settled, "RepoTransaction: Already settled");
+        require(repo.deposited, "RepoTransaction: Principal not deposited");
 
         uint256 interest = calculateInterest();
         uint256 total = repo.principal + interest;
 
-        // 매수자가 approve 한 토큰을 컨트랙트가 받음
-        bool success = token.transferFrom(buyer, seller, total);
-        require(success, "Buyer payment failed");
-
-        // 매도자에게 예치 토큰 반환 (원금)
-        success = token.transfer(seller, repo.principal);
-        require(success, "Return principal failed");
+        token.safeTransferFrom(buyer, seller, total);
+        token.safeTransfer(seller, repo.principal);
 
         repo.settled = true;
+
+        emit Settled(buyer, total);
     }
 
     function calculateInterest() public view returns (uint256) {
-        uint256 duration = (repo.maturityDate - repo.startDate) / 1 days;
+        uint256 duration = repo.maturityDate - repo.startDate;
         uint256 annualInterest = (repo.principal * repo.interestRate) / 10000;
-        uint256 interest = (annualInterest * duration) / 365;
+        uint256 interest = (annualInterest * duration) / (365 days);
         return interest;
     }
 
-    // 시연용으로 기간 상관없이 바로 정산 가능하게 하는 함수
-    function forceSettle() external {
-        require(msg.sender == buyer, "Only buyer can settle");
-        require(!repo.settled, "Already settled");
-        require(repo.deposited, "Principal not deposited");
+    // This function should be protected or removed in production
+    function forceSettle() external nonReentrant {
+        require(msg.sender == buyer, "RepoTransaction: Only buyer can settle");
+        require(!repo.settled, "RepoTransaction: Already settled");
+        require(repo.deposited, "RepoTransaction: Principal not deposited");
 
         uint256 interest = calculateInterest();
         uint256 total = repo.principal + interest;
 
-        bool success = token.transferFrom(buyer, seller, total);
-        require(success, "Buyer payment failed");
-
-        success = token.transfer(seller, repo.principal);
-        require(success, "Return principal failed");
+        token.safeTransferFrom(buyer, seller, total);
+        token.safeTransfer(seller, repo.principal);
 
         repo.settled = true;
+        emit Settled(buyer, total);
     }
 
     function getRepoInfo() external view returns (
@@ -121,5 +124,11 @@ contract RepoTransaction {
         maturityAmount = principal + interest;
         deposited = repo.deposited;
         settled = repo.settled;
+    }
+
+    // Emergency function to recover ERC20 tokens sent to the contract by mistake
+    function recoverERC20(address tokenAddress, uint256 tokenAmount) external {
+        require(msg.sender == seller, "RepoTransaction: Only seller can recover tokens");
+        IERC20(tokenAddress).safeTransfer(seller, tokenAmount);
     }
 }
