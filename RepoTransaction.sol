@@ -4,12 +4,13 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Burnable.sol";
 
 contract RepoTrade is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IERC20 public wrpToken;           // 원금 토큰
-    IERC721 public collateralNFT;     // 담보 NFT
+    ERC721Burnable public collateralNFT;     // 담보 NFT
 
     address public seller;
     address public buyer;
@@ -43,7 +44,8 @@ contract RepoTrade is ReentrancyGuard {
         require(_interestRateBPS <= 10000, "Interest max 100%");
 
         wrpToken = IERC20(_wrpToken);
-        collateralNFT = IERC721(_collateralNFT);
+        collateralNFT = ERC721Burnable(_collateralNFT);
+
 
         seller = msg.sender;
         buyer = _buyer;
@@ -90,7 +92,7 @@ contract RepoTrade is ReentrancyGuard {
         uint256 totalPayback = principalAmount + interestAmount;
 
         wrpToken.safeTransferFrom(seller, buyer, totalPayback);  // 원금+이자 상환
-        collateralNFT.transferFrom(address(this), seller, collateralTokenId); // 담보 반환
+        collateralNFT.burn(collateralTokenId); // 담보 소
 
         settled = true;
         emit Settled(msg.sender, totalPayback);
